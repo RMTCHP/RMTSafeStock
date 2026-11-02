@@ -76,7 +76,7 @@ const app = (() => {
       return `<tr class="settings-record">${cells}<td>${buttons(i)}</td></tr>`;
     }).join('');
     const columns=userTab?4:employeeTab?5:7;
-    $('view').innerHTML=`<div class="settings-heading"><span class="dash-eyebrow">MASTER DATA</span><h2>ตั้งค่าระบบ</h2><p>จัดการบัญชีผู้ใช้ พนักงาน และสินค้า PPE</p></div><div class="tabs settings-tabs"><button class="${userTab?'active':''}" onclick="app.setTab('users')">User</button><button class="${employeeTab?'active':''}" onclick="app.setTab('employees')">พนักงาน</button><button class="${tab==='products'?'active':''}" onclick="app.setTab('products')">สินค้า</button></div><section class="settings-card"><div class="settings-toolbar"><div class="settings-title"><h3>${title}</h3><span class="settings-count">${records.length} รายการ</span></div><div class="settings-tools"><label class="settings-search" for="settingsSearch"><span aria-hidden="true">⌕</span><input id="settingsSearch" type="search" placeholder="ค้นหา${title}" aria-label="ค้นหา${title}"></label><button onclick="app.${userTab?'editUser':'edit'}(-1)">+ ${addLabel}</button></div></div><div class="scroll"><table class="settings-table"><thead>${head}</thead><tbody>${rows}<tr id="settingsEmpty" ${records.length?'hidden':''}><td colspan="${columns}" class="dash-empty">${records.length?'ไม่พบรายการที่ค้นหา':'ยังไม่มีข้อมูล'}</td></tr></tbody></table></div></section>`;
+    $('view').innerHTML=`<div class="settings-heading"><span class="dash-eyebrow">MASTER DATA</span><h2>ตั้งค่าระบบ</h2><p>จัดการบัญชีผู้ใช้ พนักงาน และสินค้า PPE</p></div><div class="tabs settings-tabs"><button class="${userTab?'active':''}" onclick="app.setTab('users')">User</button><button class="${employeeTab?'active':''}" onclick="app.setTab('employees')">พนักงาน</button><button class="${tab==='products'?'active':''}" onclick="app.setTab('products')">สินค้า</button></div><section class="settings-card"><div class="settings-toolbar"><div class="settings-title"><h3>${title}</h3><span class="settings-count">${records.length} รายการ</span></div><div class="settings-tools"><label class="settings-search" for="settingsSearch"><span aria-hidden="true">⌕</span><input id="settingsSearch" type="search" placeholder="ค้นหา${title}" aria-label="ค้นหา${title}"></label>${employeeTab?'<button class="secondary" onclick="app.importEmployees()">นำเข้าพนักงาน</button>':tab==='products'?'<button class="secondary" onclick="app.importProducts()">นำเข้าสินค้า</button>':''}<button onclick="app.${userTab?'editUser':'edit'}(-1)">+ ${addLabel}</button></div></div><div class="scroll"><table class="settings-table"><thead>${head}</thead><tbody>${rows}<tr id="settingsEmpty" ${records.length?'hidden':''}><td colspan="${columns}" class="dash-empty">${records.length?'ไม่พบรายการที่ค้นหา':'ยังไม่มีข้อมูล'}</td></tr></tbody></table></div></section>`;
     $('settingsSearch').addEventListener('input',event=>{
       const term=event.target.value.trim().toLocaleLowerCase();
       let visible=0;
@@ -90,6 +90,90 @@ const app = (() => {
     });
   }
   async function setTab(value){if(value==='users'){await run('กำลังโหลดบัญชีผู้ใช้',async()=>{users=await api('users',{token});tab=value;settings();});}else{tab=value;settings();}}
+  function downloadEmployeeTemplate(){
+    const csv='\uFEFFรหัสพนักงาน,ชื่อ,นามสกุล,แผนก\r\n';
+    const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
+    const link=document.createElement('a');link.href=url;link.download='employee_import_template.csv';document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+  }
+  async function importEmployees(){
+    if(typeof XLSX==='undefined')return alert({icon:'error',title:'ไม่สามารถเปิดตัวอ่านไฟล์',text:'ตรวจสอบว่าอัปโหลดโฟลเดอร์ assets แล้วรีเฟรชหน้าเว็บ'});
+    const selection=await alert({title:'นำเข้าพนักงาน',width:620,html:'<div class="import-dialog"><p>เลือกไฟล์ Excel (.xlsx, .xls) หรือ CSV โดยใช้หัวคอลัมน์ รหัสพนักงาน, ชื่อ, นามสกุล, แผนก</p><p>รหัสที่มีอยู่แล้วจะถูกข้าม ไม่แก้ไขข้อมูลเดิม รองรับสูงสุด 1,000 รายการต่อครั้ง</p><button type="button" class="secondary import-template" id="downloadEmployeeTemplate">ดาวน์โหลดไฟล์ตัวอย่าง CSV</button><label for="employeeImportFile">เลือกไฟล์</label><input id="employeeImportFile" type="file" accept=".xlsx,.xls,.csv"><small>หากรหัสขึ้นต้นด้วย 0 ให้กำหนดคอลัมน์เป็นข้อความก่อนบันทึกไฟล์</small></div>',showCancelButton:true,confirmButtonText:'ตรวจสอบไฟล์',cancelButtonText:'ยกเลิก',didOpen:()=>$('downloadEmployeeTemplate').addEventListener('click',downloadEmployeeTemplate),preConfirm:async()=>{
+      const file=$('employeeImportFile').files[0];
+      if(!file){Swal.showValidationMessage('กรุณาเลือกไฟล์');return false;}
+      if(!/\.(xlsx|xls|csv)$/i.test(file.name)||file.size>5*1024*1024){Swal.showValidationMessage('เลือกไฟล์ Excel หรือ CSV ขนาดไม่เกิน 5 MB');return false;}
+      try{
+        const workbook=XLSX.read(await file.arrayBuffer(),{type:'array',codepage:65001,cellDates:false});
+        const sheet=workbook.Sheets[workbook.SheetNames[0]];
+        if(!sheet||!sheet['!ref'])throw Error('ไม่พบข้อมูลในชีตแรก');
+        const start=XLSX.utils.decode_range(sheet['!ref']).s.r;
+        const grid=XLSX.utils.sheet_to_json(sheet,{header:1,raw:false,defval:'',blankrows:true});
+        const headers=(grid.shift()||[]).map(x=>String(x).replace(/^\uFEFF/,'').trim().toLowerCase().replace(/[\s_\-]/g,''));
+        const aliases=[['รหัสพนักงาน','empid','employeeid','employeecode'],['ชื่อ','firstname'],['นามสกุล','lastname','surname'],['แผนก','department','dept']];
+        const columns=aliases.map(names=>headers.findIndex(h=>names.includes(h)));
+        if(columns.some(i=>i<0))throw Error('ไม่พบหัวคอลัมน์ รหัสพนักงาน, ชื่อ, นามสกุล หรือ แผนก');
+        const rows=grid.map((r,i)=>({line:start+i+2,empId:String(r[columns[0]]||'').trim(),firstName:String(r[columns[1]]||'').trim(),lastName:String(r[columns[2]]||'').trim(),department:String(r[columns[3]]||'').trim()})).filter(r=>r.empId||r.firstName||r.lastName||r.department);
+        if(!rows.length||rows.length>1000)throw Error('ไฟล์ต้องมีข้อมูล 1–1,000 รายการ');
+        return rows;
+      }catch(e){Swal.showValidationMessage('อ่านไฟล์ไม่สำเร็จ: '+e.message);return false;}
+    }});
+    if(!selection.isConfirmed)return;
+    const rows=selection.value,seen=new Set(),existing=new Set(employees.map(e=>e.empId)),valid=[],skipped=[];
+    rows.forEach(r=>{const values=[r.empId,r.firstName,r.lastName,r.department];let reason='';if(values.some(v=>!v))reason='ข้อมูลไม่ครบ';else if(values.some(v=>/^[=+\-@]/.test(v)))reason='ข้อมูลขึ้นต้นด้วยอักขระที่ไม่อนุญาต';else if(values.some(v=>v.length>200))reason='ข้อมูลยาวเกิน 200 ตัวอักษร';else if(seen.has(r.empId))reason='รหัสซ้ำในไฟล์';else if(existing.has(r.empId))reason='รหัสมีอยู่แล้วในระบบ';if(r.empId)seen.add(r.empId);if(reason)skipped.push({line:r.line,empId:r.empId,reason});else valid.push(r);});
+    const detail=skipped.slice(0,20).map(r=>`<li>แถว ${r.line}: ${esc(r.empId||'ไม่มีรหัส')} — ${esc(r.reason)}</li>`).join('');
+    const preview=valid.slice(0,5).map(r=>`<tr><td>${esc(r.empId)}</td><td>${esc(r.firstName)} ${esc(r.lastName)}</td><td>${esc(r.department)}</td></tr>`).join('');
+    const review=await alert({icon:valid.length?'question':'warning',title:'ตรวจสอบก่อนนำเข้า',width:720,html:`<div class="import-dialog"><p>พบ ${rows.length} รายการ · พร้อมนำเข้า ${valid.length} รายการ · ข้าม ${skipped.length} รายการ</p>${preview?`<div class="scroll"><table><tr><th>รหัส</th><th>ชื่อ - นามสกุล</th><th>แผนก</th></tr>${preview}</table></div><small>แสดงตัวอย่างสูงสุด 5 รายการ ระบบจะตรวจรหัสซ้ำทั้งหมดอีกครั้งก่อนบันทึก รวมถึงรายการที่ปิดใช้งาน</small>`:''}${detail?`<p>รายการที่ข้าม:</p><ul>${detail}</ul>${skipped.length>20?'<small>แสดงสูงสุด 20 รายการ</small>':''}`:''}</div>`,showCancelButton:!!valid.length,showConfirmButton:!!valid.length,confirmButtonText:'ยืนยันนำเข้า',cancelButtonText:'ยกเลิก'});
+    if(!review.isConfirmed||!valid.length)return;
+    try{
+      loading('กำลังนำเข้าพนักงาน');
+      const result=await write('importEmployees',{rows:valid});
+      let refreshWarning='';try{await refresh();settings();}catch(e){refreshWarning=' กรุณารีเฟรชหน้าเพื่อโหลดข้อมูลล่าสุด';}
+      Swal.close();
+      const allSkipped=skipped.concat(result.skipped||[]);
+      const after=allSkipped.slice(0,20).map(r=>`<li>แถว ${r.line}: ${esc(r.empId||'ไม่มีรหัส')} — ${esc(r.reason)}</li>`).join('');
+      await alert({icon:allSkipped.length?'warning':'success',title:'นำเข้าพนักงานเสร็จสิ้น',html:`<div class="import-dialog"><p>นำเข้าสำเร็จ ${result.imported} รายการ · ข้าม ${allSkipped.length} รายการ${esc(refreshWarning)}</p>${after?`<ul>${after}</ul>${allSkipped.length>20?'<small>แสดงสูงสุด 20 รายการ</small>':''}`:''}</div>`});
+    }catch(e){Swal.close();await error(e);}
+  }
+  function downloadProductTemplate(){
+    const csv='\uFEFFชื่อสินค้า,หน่วย,ยอดคงเหลือ,จุดสั่งซื้อ,เบิกซ้ำได้ทุกวัน\r\n';
+    const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
+    const link=document.createElement('a');link.href=url;link.download='ppe_import_template.csv';document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+  }
+  async function importProducts(){
+    if(typeof XLSX==='undefined')return alert({icon:'error',title:'ไม่สามารถเปิดตัวอ่านไฟล์',text:'ตรวจสอบว่าอัปโหลดโฟลเดอร์ assets แล้วรีเฟรชหน้าเว็บ'});
+    const selection=await alert({title:'นำเข้าสินค้า PPE',width:620,html:'<div class="import-dialog"><p>เลือกไฟล์ Excel (.xlsx, .xls) หรือ CSV ที่มีหัวคอลัมน์ ชื่อสินค้า, หน่วย, ยอดคงเหลือ, จุดสั่งซื้อ, เบิกซ้ำได้ทุกวัน</p><p>ระบบสร้างรหัสสินค้าให้อัตโนมัติ ชื่อสินค้าซ้ำจะถูกเพิ่มเป็นรายการใหม่ ไม่ทับข้อมูลเดิม รองรับสูงสุด 1,000 รายการต่อครั้ง</p><button type="button" class="secondary import-template" id="downloadProductTemplate">ดาวน์โหลดไฟล์ตัวอย่าง CSV</button><label for="productImportFile">เลือกไฟล์</label><input id="productImportFile" type="file" accept=".xlsx,.xls,.csv"><small>ตัวเลขทุกช่องต้องเป็นจำนวนเต็มตั้งแต่ 0 ขึ้นไป โดย 0 วันหมายถึงไม่มีระยะจำกัดการเบิกซ้ำ</small></div>',showCancelButton:true,confirmButtonText:'ตรวจสอบไฟล์',cancelButtonText:'ยกเลิก',didOpen:()=>$('downloadProductTemplate').addEventListener('click',downloadProductTemplate),preConfirm:async()=>{
+      const file=$('productImportFile').files[0];
+      if(!file){Swal.showValidationMessage('กรุณาเลือกไฟล์');return false;}
+      if(!/\.(xlsx|xls|csv)$/i.test(file.name)||file.size>5*1024*1024){Swal.showValidationMessage('เลือกไฟล์ Excel หรือ CSV ขนาดไม่เกิน 5 MB');return false;}
+      try{
+        const workbook=XLSX.read(await file.arrayBuffer(),{type:'array',codepage:65001,cellDates:false});
+        const sheet=workbook.Sheets[workbook.SheetNames[0]];
+        if(!sheet||!sheet['!ref'])throw Error('ไม่พบข้อมูลในชีตแรก');
+        const start=XLSX.utils.decode_range(sheet['!ref']).s.r;
+        const grid=XLSX.utils.sheet_to_json(sheet,{header:1,raw:false,defval:'',blankrows:true});
+        const headers=(grid.shift()||[]).map(x=>String(x).replace(/^\uFEFF/,'').trim().toLowerCase().replace(/[\s_\-]/g,''));
+        const aliases=[['ชื่อสินค้า','productname','name'],['หน่วย','unit'],['ยอดคงเหลือ','stockqty','stock'],['จุดสั่งซื้อ','reorderpoint','minstock'],['เบิกซ้ำได้ทุกวัน','ระยะเวลาเบิกซ้ำวัน','issueintervaldays','intervaldays']];
+        const columns=aliases.map(names=>headers.findIndex(h=>names.includes(h)));
+        if(columns.some(i=>i<0))throw Error('ไม่พบหัวคอลัมน์ที่กำหนด กรุณาใช้ไฟล์ตัวอย่าง');
+        const rows=grid.map((r,i)=>({line:start+i+2,productName:String(r[columns[0]]??'').trim(),unit:String(r[columns[1]]??'').trim(),stockQty:String(r[columns[2]]??'').trim(),reorderPoint:String(r[columns[3]]??'').trim(),issueIntervalDays:String(r[columns[4]]??'').trim()})).filter(r=>r.productName||r.unit||r.stockQty||r.reorderPoint||r.issueIntervalDays);
+        if(!rows.length||rows.length>1000)throw Error('ไฟล์ต้องมีข้อมูล 1–1,000 รายการ');
+        return rows;
+      }catch(e){Swal.showValidationMessage('อ่านไฟล์ไม่สำเร็จ: '+e.message);return false;}
+    }});
+    if(!selection.isConfirmed)return;
+    const rows=selection.value,valid=[],skipped=[];
+    rows.forEach(r=>{let reason='';const texts=[r.productName,r.unit],nums=[r.stockQty,r.reorderPoint,r.issueIntervalDays];if(texts.some(v=>!v)||nums.some(v=>v===''))reason='ข้อมูลไม่ครบ';else if(texts.some(v=>/^[=+\-@]/.test(v)||v.length>200))reason='ชื่อหรือหน่วยไม่ถูกต้อง';else if(nums.some(v=>!Number.isSafeInteger(Number(v))||Number(v)<0))reason='จำนวนต้องเป็นจำนวนเต็มตั้งแต่ 0 ขึ้นไป';if(reason)skipped.push({line:r.line,productName:r.productName,reason});else valid.push(r);});
+    const details=list=>list.slice(0,20).map(r=>`<li>แถว ${r.line}: ${esc(r.productName||'ไม่มีชื่อ')} — ${esc(r.reason)}</li>`).join('');
+    const preview=valid.slice(0,5).map(r=>`<tr><td>${esc(r.productName)}</td><td>${esc(r.unit)}</td><td>${esc(r.stockQty)}</td><td>${esc(r.reorderPoint)}</td><td>${esc(r.issueIntervalDays)}</td></tr>`).join('');
+    const review=await alert({icon:valid.length?'question':'warning',title:'ตรวจสอบก่อนนำเข้า',width:760,html:`<div class="import-dialog"><p>พบ ${rows.length} รายการ · พร้อมนำเข้า ${valid.length} รายการ · ข้าม ${skipped.length} รายการ</p>${preview?`<div class="scroll"><table><tr><th>สินค้า</th><th>หน่วย</th><th>คงเหลือ</th><th>จุดสั่งซื้อ</th><th>เบิกซ้ำ (วัน)</th></tr>${preview}</table></div><small>แสดงตัวอย่างสูงสุด 5 รายการ ชื่อที่ซ้ำจะถูกเพิ่มเป็นสินค้าใหม่ โปรดตรวจสอบก่อนยืนยัน</small>`:''}${skipped.length?`<p>รายการที่ข้าม:</p><ul>${details(skipped)}</ul>${skipped.length>20?'<small>แสดงสูงสุด 20 รายการ</small>':''}`:''}</div>`,showCancelButton:!!valid.length,showConfirmButton:!!valid.length,confirmButtonText:'ยืนยันนำเข้า',cancelButtonText:'ยกเลิก'});
+    if(!review.isConfirmed||!valid.length)return;
+    try{
+      loading('กำลังนำเข้าสินค้า');
+      const result=await write('importProducts',{rows:valid});
+      let refreshWarning='';try{await refresh();settings();}catch(e){refreshWarning=' กรุณารีเฟรชหน้าเพื่อโหลดข้อมูลล่าสุด';}
+      Swal.close();const allSkipped=skipped.concat(result.skipped||[]);
+      await alert({icon:allSkipped.length?'warning':'success',title:'นำเข้าสินค้าเสร็จสิ้น',html:`<div class="import-dialog"><p>นำเข้าสำเร็จ ${result.imported} รายการ · ข้าม ${allSkipped.length} รายการ${esc(refreshWarning)}</p>${allSkipped.length?`<ul>${details(allSkipped)}</ul>${allSkipped.length>20?'<small>แสดงสูงสุด 20 รายการ</small>':''}`:''}</div>`});
+    }catch(e){Swal.close();await error(e);}
+  }
   async function editUser(i){
     const user=i<0?{}:users[i];
     const result=await alert({title:i<0?'เพิ่มบัญชีผู้ใช้':'แก้ไขบัญชีผู้ใช้',html:`<div class="swal-form">${field('userName','Username','text',user.username)}${field('displayName','ชื่อที่แสดง','text',user.displayName)}${field('userPassword',i<0?'รหัสผ่าน (อย่างน้อย 4 ตัว)':'รหัสผ่านใหม่ (เว้นว่างหากไม่เปลี่ยน)','password')}</div>`,showCancelButton:true,confirmButtonText:'บันทึก',cancelButtonText:'ยกเลิก',didOpen:()=>{if(i>=0)$('userName').readOnly=true;},preConfirm:()=>{const data={userId:user.userId||'',username:$('userName').value.trim(),displayName:$('displayName').value.trim(),password:$('userPassword').value};if(!data.username||!data.displayName||((i<0||data.password)&&data.password.length<4)){Swal.showValidationMessage('กรุณากรอกชื่อผู้ใช้ ชื่อที่แสดง และรหัสผ่านอย่างน้อย 4 ตัว');return false;}return data;}});
@@ -110,5 +194,5 @@ const app = (() => {
     await run('กำลังบันทึกข้อมูล',async()=>{await write(isEmp?'saveEmployee':'saveProduct',{data:result.value.data});await refresh();settings();},'บันทึกข้อมูลสำเร็จ');
   }
   async function remove(i){const isEmp=tab==='employees',v=(isEmp?employees:products)[i],id=isEmp?v.empId:v.productId;if(!await confirm('ยืนยันลบรายการ',id+' — ประวัติรายการเดิมยังคงอยู่'))return;await run('กำลังลบข้อมูล',async()=>{await write(isEmp?'deleteEmployee':'deleteProduct',isEmp?{empId:id}:{productId:id});await refresh();settings();},'ลบรายการสำเร็จ');}
-  return {login,logout,page,issue,receive,setTab,edit,remove,editUser,removeUser,togglePassword};
+  return {login,logout,page,issue,receive,setTab,edit,remove,editUser,removeUser,togglePassword,importEmployees,importProducts};
 })();
