@@ -1,5 +1,5 @@
 const app = (() => {
-  let token = '', products = [], employees = [], users = [], tab = 'employees', selectedEmployee = '';
+  let token = '', products = [], employees = [], users = [], tab = 'employees', selectedEmployee = '', dateReportData = null;
   const $ = id => document.getElementById(id);
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const alert = options => Swal.fire({confirmButtonColor:'#0f766e',cancelButtonColor:'#64748b',showCloseButton:true,...options});
@@ -13,13 +13,15 @@ const app = (() => {
     const result=await response.json(); if(!result.ok) throw Error(result.error || 'เกิดข้อผิดพลาด'); return result.data;
   }
   const write=(action,data)=>api('write',{writeAction:action,payload:{token,...data}});
-  async function refresh(){[products,employees]=await Promise.all([api('products',{token}),api('employees',{token})]);products.sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'th',{numeric:true,sensitivity:'base'}));}
+  async function refreshProducts(){products=await api('products',{token});products.sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'th',{numeric:true,sensitivity:'base'}));}
+  async function refreshEmployees(){employees=await api('employees',{token});}
+  async function refresh(){await Promise.all([refreshProducts(),refreshEmployees()]);}
   async function run(title, fn, success) { try { loading(title); const result=await fn(); Swal.close(); if(success) await alert({icon:'success',title:success}); return result; } catch(e){Swal.close();await error(e);return null;} }
   function productLabel(p){return [p.name,p.brand,p.model,p.size?'Size '+p.size:''].filter(Boolean).join(' · ');}
   function options(){return '<option value="">เลือกสินค้า</option>'+products.map(p=>`<option value="${esc(p.productId)}">${esc(productLabel(p))} (${p.stockQty} ${esc(p.unit)})</option>`).join('');}
   function field(id,label,type='text',value=''){return `<div class="field"><label for="${id}">${label}</label><input id="${id}" type="${type}" value="${esc(value)}" ${type==='number'?'min="0" step="1"':''}></div>`;}
   function qty(value){const n=Number(value);return Number.isInteger(n)&&n>0;}
-  async function login(){const button=$('loginSubmit');if(button.disabled)return;const username=$('username').value.trim(),password=$('password').value;if(!username||!password)return alert({icon:'warning',title:'กรุณากรอกชื่อผู้ใช้และรหัสผ่าน'});button.disabled=true;try{if(!await confirm('เข้าสู่ระบบ','เข้าสู่ระบบด้วย '+username+'?'))return;button.classList.add('is-loading');button.setAttribute('aria-busy','true');button.querySelector('.login-label').textContent='กำลังเข้าสู่ระบบ';await run('กำลังเข้าสู่ระบบ',async()=>{const r=await api('login',{username,password});token=r.token;$('who').textContent=r.user.displayName;await refresh();$('login').hidden=true;$('app').hidden=false;await render('dash');},'เข้าสู่ระบบสำเร็จ');}finally{button.disabled=false;button.classList.remove('is-loading');button.removeAttribute('aria-busy');button.querySelector('.login-label').textContent='เข้าสู่ระบบ';}}
+  async function login(){const button=$('loginSubmit');if(button.disabled)return;const username=$('username').value.trim(),password=$('password').value;if(!username||!password)return alert({icon:'warning',title:'กรุณากรอกชื่อผู้ใช้และรหัสผ่าน'});button.disabled=true;try{if(!await confirm('เข้าสู่ระบบ','เข้าสู่ระบบด้วย '+username+'?'))return;button.classList.add('is-loading');button.setAttribute('aria-busy','true');button.querySelector('.login-label').textContent='กำลังเข้าสู่ระบบ';await run('กำลังเข้าสู่ระบบ',async()=>{const r=await api('login',{username,password});token=r.token;$('who').textContent=r.user.displayName;await Promise.all([refresh(),render('dash')]);$('login').hidden=true;$('app').hidden=false;},'เข้าสู่ระบบสำเร็จ');}finally{button.disabled=false;button.classList.remove('is-loading');button.removeAttribute('aria-busy');button.querySelector('.login-label').textContent='เข้าสู่ระบบ';}}
   function togglePassword(){const input=$('password'),button=document.querySelector('.password-toggle'),show=input.type==='password';input.type=show?'text':'password';button.textContent=show?'ซ่อน':'แสดง';button.setAttribute('aria-label',show?'ซ่อนรหัสผ่าน':'แสดงรหัสผ่าน');button.setAttribute('aria-pressed',String(show));}
   async function logout(){if(!await confirm('ออกจากระบบ','ต้องการออกจากระบบใช่หรือไม่'))return;await run('กำลังออกจากระบบ',async()=>{await write('logout',{});token='';$('app').hidden=true;$('login').hidden=false;$('password').value='';},'ออกจากระบบแล้ว');}
   async function page(name){if(name==='settings')tab='users';await run('กำลังโหลดข้อมูล',()=>render(name));}
@@ -35,14 +37,35 @@ const app = (() => {
       icon('<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4m10-4v4M3 10h18m-2 5h6"/>')
     ];
     const metrics=[['รายการสินค้าทั้งหมด',d.products,'รายการ'],['สินค้าถึงจุดสั่งซื้อ',d.lowCount,'รวมสินค้าที่หมด'],['สินค้าหมด',d.zeroCount,'รายการ'],['เบิกวันนี้',d.issuesToday ?? '—','รายการเบิก'],['เบิกเดือนนี้',d.issuesMonth ?? '—','รายการเบิก']];
-    const alerts=[...d.lowProducts].sort((a,b)=>(Number(a.stockQty)<=0?0:1)-(Number(b.stockQty)<=0?0:1));
+    const alerts=sortStockAlerts(d.lowProducts);
     $('view').innerHTML=`<section class="dashboard command-center">
       <div class="dash-heading"><div><span class="dash-eyebrow">SAFETY INVENTORY</span><h2>ภาพรวมสต็อก</h2><p>ติดตามสถานะอุปกรณ์ Safety และรายการเคลื่อนไหว</p></div><button class="secondary dash-refresh" onclick="app.page('dash')">↻ รีเฟรช</button></div>
       <div class="dash-kpis">${metrics.map((m,i)=>`<div class="dash-kpi dash-kpi-${i}"><div class="dash-kpi-top"><span>${m[0]}</span><span class="dash-icon">${icons[i]}</span></div><div class="dash-value">${m[1]}</div><small>${m[2]}</small></div>`).join('')}</div>
       ${!d.products?'<div class="dash-onboard"><div><strong>เริ่มต้นใช้งาน SafeStock</strong><p>เพิ่มสินค้าและพนักงานใน Settings เพื่อเริ่มทำรายการ</p></div><button class="secondary" onclick="app.page(\'settings\')">ไปที่ Settings</button></div>':''}
-      <div class="command-layout"><section class="dash-panel command-stock"><div class="dash-panel-head"><div><h3>สินค้าที่ต้องติดตาม <span class="command-count">${alerts.length}</span></h3><p>รายการสินค้าที่หมดหรือถึงจุดสั่งซื้อ</p></div><button class="secondary" onclick="app.page('receive')">รับสินค้าเข้า</button></div><div class="command-list">${alerts.map(p=>`<article class="command-stock-row"><div class="command-item-icon" aria-hidden="true">${icons[0]}</div><div class="command-stock-name"><strong>${esc(productLabel(p))}</strong><small>รหัส ${esc(p.productId)}</small></div><div class="command-stock-amount"><strong>${esc(p.stockQty)} ${esc(p.unit)}</strong><small>ขั้นต่ำ ${esc(p.reorderPoint)} ${esc(p.unit)}</small></div><span class="dash-badge ${p.stockQty<=0?'badge-danger':'badge-warning'}">${p.stockQty<=0?'หมดสต็อก':'ถึงจุดสั่งซื้อ'}</span></article>`).join('')||'<div class="command-empty"><span aria-hidden="true">✓</span><strong>ไม่มีสินค้าที่ต้องติดตาม</strong><small>ยังไม่มีสินค้าหมดหรือถึงจุดสั่งซื้อ</small></div>'}</div></section>
+      <div class="command-layout"><section class="dash-panel command-stock"><div class="dash-panel-head"><div><h3>สินค้าที่ต้องติดตาม <span class="command-count">${alerts.length}</span></h3><p>รายการสินค้าที่หมดหรือถึงจุดสั่งซื้อ</p></div><div class="stock-alert-toolbar"><label class="stock-alert-search" for="stockAlertSearch"><span aria-hidden="true">⌕</span><input id="stockAlertSearch" type="search" placeholder="ค้นหาสินค้า, Size, Brand หรือรหัส" aria-label="ค้นหาสินค้าที่ต้องติดตาม"></label><label class="stock-alert-filter"><span class="stock-alert-filter-label">สถานะ</span><select id="stockAlertFilter" aria-label="กรองตามสถานะ"><option value="all">ทั้งหมด</option><option value="out">หมดสต็อก</option><option value="low">ถึงจุดสั่งซื้อ</option></select></label><button class="secondary" onclick="app.page('receive')">รับสินค้าเข้า</button></div></div><div id="stockAlertList" class="command-list" aria-live="polite"></div><div id="stockAlertFooter" class="stock-alert-footer" hidden><span id="stockAlertCount"></span></div></section>
       <div class="command-side"><section class="dash-panel"><div class="dash-panel-head"><div><h3>รายการเคลื่อนไหวล่าสุด</h3><p>ประวัติการเบิกและรับสินค้าเข้า</p></div></div><div class="command-activity">${d.recent.map(t=>`<article class="command-activity-row"><div class="command-movement ${t.type==='ISSUE'?'is-issue':t.type==='RECEIPT'?'is-receipt':'is-adjust'}" aria-hidden="true">${t.type==='ISSUE'?'↗':t.type==='RECEIPT'?'↓':'↔'}</div><div class="command-activity-main"><div class="command-activity-title"><strong>${esc(({ISSUE:'เบิกอุปกรณ์',RECEIPT:'รับสินค้าเข้า',ADJUSTMENT:'ปรับยอดสต็อก'})[t.type]||t.type)}</strong><time>${esc(t.timestamp)}</time></div><div class="command-activity-product">${esc(t.product||'—')}</div><small>${t.employee&&t.employee!=='-'?'พนักงาน '+esc(t.employee)+' · ':''}จำนวน ${esc(t.qty)} · คงเหลือ ${esc(t.after)}</small></div></article>`).join('')||'<div class="command-empty"><span aria-hidden="true">○</span><strong>ยังไม่มีรายการเคลื่อนไหวล่าสุด</strong><small>รายการเบิก รับเข้า และปรับยอดจะแสดงที่นี่</small></div>'}</div></section><section class="dash-panel command-shortcuts"><div class="dash-panel-head"><div><h3>เมนูใช้งานด่วน</h3><p>เลือกทำรายการที่ต้องการ</p></div></div><div class="command-shortcut-list"><button onclick="app.page('issue')"><span aria-hidden="true">↗</span>เบิกอุปกรณ์</button><button onclick="app.page('receive')"><span aria-hidden="true">↓</span>รับสินค้าเข้า</button><button onclick="app.page('report')"><span aria-hidden="true">≡</span>ดูประวัติการเบิก</button></div></section></div></div></section>`;
+    const drawAlerts=()=>{
+      const term=$('stockAlertSearch').value.trim().toLocaleLowerCase(),filter=$('stockAlertFilter').value;
+      const matched=alerts.filter(p=>{
+        const out=Number(p.stockQty)<=0;
+        const status=filter==='all'||(filter==='out'&&out)||(filter==='low'&&!out);
+        return status&&[p.name,p.brand,p.model,p.size,p.productId].some(v=>String(v??'').toLocaleLowerCase().includes(term));
+      });
+      const shown=matched;
+      $('stockAlertList').innerHTML=shown.map(p=>`<article class="command-stock-row"><div class="command-item-icon" aria-hidden="true">${icons[0]}</div><div class="command-stock-name"><strong>${esc(productLabel(p))}</strong><small>รหัส ${esc(p.productId)}</small></div><div class="command-stock-amount"><strong>${esc(p.stockQty)} ${esc(p.unit)}</strong><small>ขั้นต่ำ ${esc(p.reorderPoint)} ${esc(p.unit)}</small></div><span class="dash-badge ${Number(p.stockQty)<=0?'badge-danger':'badge-warning'}">${Number(p.stockQty)<=0?'หมดสต็อก':'ถึงจุดสั่งซื้อ'}</span></article>`).join('')||`<div class="command-empty"><span aria-hidden="true">${alerts.length?'⌕':'✓'}</span><strong>${alerts.length?'ไม่พบสินค้าตามเงื่อนไข':'ไม่มีสินค้าที่ต้องติดตาม'}</strong><small>${alerts.length?'ลองเปลี่ยนคำค้นหาหรือตัวกรอง':'ยังไม่มีสินค้าหมดหรือถึงจุดสั่งซื้อ'}</small></div>`;
+      $('stockAlertFooter').hidden=matched.length===0;
+      $('stockAlertCount').textContent='แสดง '+shown.length+' จาก '+matched.length+' รายการ';
+    };
+    $('stockAlertSearch').addEventListener('input',drawAlerts);
+    $('stockAlertFilter').addEventListener('change',drawAlerts);
+    drawAlerts();
   }
+  function sortStockAlerts(items){return [...items].sort((a,b)=>{
+    const aq=Number(a.stockQty),bq=Number(b.stockQty),az=aq<=0,bz=bq<=0;
+    if(az!==bz)return az?-1:1;
+    if(!az){const ar=Number(a.reorderPoint)>0?aq/Number(a.reorderPoint):Infinity,br=Number(b.reorderPoint)>0?bq/Number(b.reorderPoint):Infinity;if(ar!==br)return ar-br;}
+    return String(a.name||'').localeCompare(String(b.name||''),'th',{numeric:true,sensitivity:'base'})||String(a.size||'').localeCompare(String(b.size||''),'th',{numeric:true,sensitivity:'base'});
+  });}
   function issueView(){selectedEmployee='';$('view').innerHTML=`<div class="issue-heading"><div><span class="dash-eyebrow">PPE ISSUANCE</span><h2>เบิกอุปกรณ์ Safety</h2><p>ตรวจสอบพนักงานและอุปกรณ์ก่อนยืนยันการเบิก</p></div></div><div class="issue-grid"><section class="issue-card"><div class="section-title"><span class="step">01</span><div><h3>ข้อมูลพนักงาน</h3><p>ค้นหาผู้เบิกด้วยรหัสพนักงาน</p></div></div><div class="field">${field('emp','รหัสพนักงาน')}</div><p class="issue-help">กรอกรหัสพนักงานแล้วแตะออกจากช่องเพื่อค้นหา</p><div class="issue-employee"><div class="field"><label for="ename">ชื่อ - นามสกุล</label><input id="ename" readonly placeholder="แสดงหลังค้นหา"></div><div class="field"><label for="dept">แผนก</label><input id="dept" readonly placeholder="แสดงหลังค้นหา"></div></div></section><section class="issue-card"><div class="section-title"><span class="step">02</span><div><h3>เลือกอุปกรณ์</h3><p>เลือกสินค้าและระบุจำนวนที่ต้องการ</p></div></div><div class="issue-selection"><div class="field issue-product"><label for="item">Item</label><select id="item"><option value="">เลือก Item</option></select></div><div class="field issue-size"><label for="prod">Size</label><select id="prod" disabled><option value="">เลือก Item ก่อน</option></select></div>${field('qty','จำนวน','number','1')}</div><div class="stock-info" id="stockInfo">เลือกสินค้าเพื่อดูยอดคงเหลือ</div><div class="field issue-note"><label for="memo">หมายเหตุ (ถ้ามี)</label><textarea id="memo" rows="2" placeholder="ระบุรายละเอียดเพิ่มเติม"></textarea></div></section><section class="issue-card issue-confirm"><div class="issue-confirm-main"><div class="section-title"><span class="step">03</span><div><h3>ตรวจสอบสิทธิ์การเบิก</h3><p>สถานะอ้างอิงจากประวัติการเบิกและยอดคงเหลือ</p></div></div><div id="eligibility" aria-live="polite"></div></div><button onclick="app.issue()">ยืนยันการเบิกสินค้า</button></section></div>`;const itemKey=value=>String(value??'').trim().replace(/\s+/g,' ').toLowerCase();const names=new Map();products.forEach(p=>{const k=itemKey(p.name);if(k&&!names.has(k))names.set(k,String(p.name).trim())});$('item').innerHTML+=[...names].map(([key,name])=>`<option value="${esc(key)}">${esc(name)}</option>`).join('');$('item').addEventListener('change',()=>{const key=$('item').value;const matches=products.filter(p=>itemKey(p.name)===key);$('prod').innerHTML='<option value="">'+(key?'เลือก Size':'เลือก Item ก่อน')+'</option>'+matches.map(p=>`<option value="${esc(p.productId)}">${esc(p.size||'ไม่ระบุ Size')} · ${esc([p.brand,p.model].filter(Boolean).join(' / ')||'ไม่ระบุ Brand / Model')} · ${esc(p.stockQty)} ${esc(p.unit)} · ${esc(p.productId)}</option>`).join('');$('prod').disabled=!key;$('stockInfo').textContent='เลือก Size เพื่อดูยอดคงเหลือ';$('eligibility').innerHTML='';});$('emp').addEventListener('input',()=>{selectedEmployee='';$('ename').value='';$('dept').value='';$('eligibility').innerHTML='';});$('emp').addEventListener('change',findEmployee);$('prod').addEventListener('change',()=>{$('eligibility').innerHTML='';const p=products.find(x=>x.productId===$('prod').value);$('stockInfo').innerHTML=p?`คงเหลือ <strong>${esc(p.stockQty)} ${esc(p.unit)}</strong> <span class="helper"> · รหัส ${esc(p.productId)}</span>`:'เลือกสินค้าเพื่อดูยอดคงเหลือ';eligible();});}
   async function findEmployee(){const id=$('emp').value.trim();if(!id)return;await run('กำลังค้นหาพนักงาน',async()=>{const r=await api('employee',{token,empId:id});if(!r.found)throw Error('ไม่พบรหัสพนักงาน');if($('emp').value.trim()!==id)return;selectedEmployee=r.employee.empId;$('emp').value=selectedEmployee;$('ename').value=r.employee.fullName;$('dept').value=r.employee.department;await checkEligibility();});}
   async function checkEligibility(){if(!selectedEmployee||!$('prod').value)return;const employeeId=selectedEmployee,productId=$('prod').value;const r=await api('eligibility',{token,empId:employeeId,productId});if(!$('prod')||selectedEmployee!==employeeId||$('prod').value!==productId)return;$('eligibility').innerHTML=`<div class="msg ${r.allowed?'ok':r.reason==='INTERVAL'?'warning':'bad'}">${esc(r.message)}${r.reason==='INTERVAL'?'<br><small>หากมีใบ Memo สามารถระบุรายละเอียดเพื่อขอเบิกก่อนกำหนดได้</small>':''}</div>`;return r;}
@@ -56,7 +79,7 @@ const app = (() => {
       if(!memo.isConfirmed)return;memoOverride=true;memoReference=memo.value.trim();
     }
     if(!await confirm('ยืนยันการเบิก','เบิกสินค้า '+amount+' หน่วย ให้ '+$('ename').value+(memoOverride?' โดยใช้ Memo '+memoReference:'')+'?'))return;
-    await run('กำลังบันทึกการเบิก',async()=>{await write('issue',{data:{empId:emp,productId,qty:amount,note,memoOverride,memoReference}});await refresh();issueView();},'บันทึกการเบิกสำเร็จ');}
+    await run('กำลังบันทึกการเบิก',async()=>{await write('issue',{data:{empId:emp,productId,qty:amount,note,memoOverride,memoReference}});await refreshProducts();issueView();},'บันทึกการเบิกสำเร็จ');}
   function receiveView(){
     $('view').innerHTML=`<div class="receive-heading"><span class="dash-eyebrow">STOCK RECEIVING WORKSPACE</span><h2>รับสินค้าเข้าคลัง</h2><p>บันทึกสินค้าเข้าและตรวจสอบยอดคงเหลือ</p></div><div class="receive-grid"><section class="receive-card"><div class="section-title"><span class="step">01</span><div><h3>รายละเอียดการรับสินค้า</h3><p>เลือกสินค้าและระบุจำนวนที่รับเข้า</p></div></div><div class="field"><label for="prod">สินค้า</label><select id="prod">${options()}</select></div><div class="receive-quantity">${field('qty','จำนวนที่รับ','number')}</div><div class="field receive-note"><label for="memo">หมายเหตุ / เลขเอกสาร</label><textarea id="memo" rows="3" placeholder="ระบุรายละเอียดเพิ่มเติม"></textarea></div><div class="receive-actions"><button onclick="app.receive()">บันทึกรับสินค้า</button></div></section><aside class="receive-card receive-summary"><div class="section-title"><span class="step">02</span><div><h3>สรุปยอดสินค้า</h3><p>ตรวจสอบข้อมูลก่อนบันทึก</p></div></div><div class="receive-product"><span>สินค้า</span><strong id="previewProduct">ยังไม่ได้เลือกสินค้า</strong><small id="previewCode">—</small></div><div id="stockInfo" class="receive-stock-line">เลือกสินค้าเพื่อดูยอดคงเหลือ</div><div class="receive-stock-line"><span>จุดสั่งซื้อ</span><strong id="previewReorder">—</strong></div><div class="receive-stock-line"><span>จำนวนรับเข้า</span><strong id="previewQty">—</strong></div><div class="receive-estimate"><span>ยอดคงเหลือหลังรับโดยประมาณ</span><strong id="previewTotal">—</strong><small>ยอดจริงจะยืนยันเมื่อบันทึกสำเร็จ</small></div></aside></div>`;
     function updatePreview(){
@@ -73,10 +96,41 @@ const app = (() => {
     $('prod').addEventListener('change',updatePreview);
     $('qty').addEventListener('input',updatePreview);
   }
-  async function receive(){const productId=$('prod').value,amount=$('qty').value,note=$('memo').value;if(!productId||!qty(amount))return alert({icon:'warning',title:'กรุณาเลือกสินค้าและระบุจำนวนเต็มที่มากกว่า 0'});if(!await confirm('ยืนยันรับสินค้า','รับสินค้าเข้า '+amount+' หน่วย?'))return;await run('กำลังบันทึกรับสินค้า',async()=>{await write('receive',{data:{productId,qty:amount,note}});await refresh();receiveView();},'รับสินค้าเข้าสำเร็จ');}
+  async function receive(){const productId=$('prod').value,amount=$('qty').value,note=$('memo').value;if(!productId||!qty(amount))return alert({icon:'warning',title:'กรุณาเลือกสินค้าและระบุจำนวนเต็มที่มากกว่า 0'});if(!await confirm('ยืนยันรับสินค้า','รับสินค้าเข้า '+amount+' หน่วย?'))return;await run('กำลังบันทึกรับสินค้า',async()=>{await write('receive',{data:{productId,qty:amount,note}});await refreshProducts();receiveView();},'รับสินค้าเข้าสำเร็จ');}
   function reportView(){
-    $('view').innerHTML=`<div class="heading"><div><span class="dash-eyebrow">ISSUANCE REPORT</span><h2>ประวัติการเบิก</h2><p>ค้นหาประวัติการเบิกตามรหัสพนักงาน</p></div><button class="secondary" onclick="app.importLegacyHistory()">นำเข้าประวัติรองเท้า</button></div><div class="box"><form id="reportForm"><div class="row"><div class="field"><label for="reportEmp">รหัสพนักงาน</label><input id="reportEmp" autocomplete="off" placeholder="เช่น 100 หรือ 0100" required></div><div class="field report-search-action"><button type="submit">ค้นหาประวัติ</button></div></div></form><div id="reportResult" aria-live="polite"><p class="helper">กรอกรหัสพนักงานเพื่อดูประวัติการเบิก</p></div></div>`;
+    dateReportData=null;
+    $('view').innerHTML=`<div class="heading"><div><span class="dash-eyebrow">ISSUANCE REPORT</span><h2>รายงานการเบิก</h2><p>ค้นหาประวัติรายพนักงานหรือรายงานตามวันที่</p></div></div><div class="tabs settings-tabs report-tabs"><button type="button" id="employeeReportTab" class="active" onclick="app.setReportTab('employee')">ประวัติรายพนักงาน</button><button type="button" id="dateReportTab" onclick="app.setReportTab('date')">รายงานตามวันที่</button></div><div id="employeeReportPanel" class="box"><form id="reportForm"><div class="row"><div class="field"><label for="reportEmp">รหัสพนักงาน</label><input id="reportEmp" autocomplete="off" placeholder="เช่น 100 หรือ 0100" required></div><div class="field report-search-action"><button type="submit">ค้นหาประวัติ</button></div></div></form><div id="reportResult" aria-live="polite"><p class="helper">กรอกรหัสพนักงานเพื่อดูประวัติการเบิก</p></div></div><div id="dateReportPanel" class="box" hidden><form id="dateReportForm"><div class="row report-date-controls"><div class="field"><label for="reportStart">วันที่เริ่มต้น</label><input id="reportStart" type="date" required></div><div class="field"><label for="reportEnd">วันที่สิ้นสุด</label><input id="reportEnd" type="date" required></div><div class="report-date-buttons"><button type="submit">ค้นหารายการ</button><button type="button" class="secondary" id="reportExport" onclick="app.exportDateReport()" disabled>Export Excel</button></div></div></form><p class="helper">รวมรายการเบิกของทุกคนและประวัติรองเท้าเดิม ตลอดวันเริ่มต้นถึงวันสิ้นสุด</p><div id="dateReportResult" aria-live="polite"><p class="helper">เลือกช่วงวันที่แล้วกดค้นหารายการ</p></div></div>`;
     $('reportForm').addEventListener('submit',event=>{event.preventDefault();searchReport();});
+    const parts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Bangkok',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()).filter(x=>x.type!=='literal').map(x=>[x.type,x.value]));
+    $('reportEnd').value=parts.year+'-'+parts.month+'-'+parts.day;$('reportStart').value=parts.year+'-'+parts.month+'-01';
+    $('dateReportForm').addEventListener('submit',event=>{event.preventDefault();searchDateReport();});
+    ['reportStart','reportEnd'].forEach(id=>$(id).addEventListener('input',()=>{dateReportData=null;$('reportExport').disabled=true;$('dateReportResult').innerHTML='<p class="helper">ช่วงวันที่เปลี่ยนแล้ว กรุณาค้นหาใหม่ก่อน Export</p>';}));
+  }
+  function setReportTab(name){const isDate=name==='date';$('employeeReportPanel').hidden=isDate;$('dateReportPanel').hidden=!isDate;$('employeeReportTab').classList.toggle('active',!isDate);$('dateReportTab').classList.toggle('active',isDate);}
+  async function searchDateReport(){
+    const startDate=$('reportStart').value,endDate=$('reportEnd').value;
+    if(!startDate||!endDate||startDate>endDate)return alert({icon:'warning',title:'ช่วงวันที่ไม่ถูกต้อง',text:'กรุณาเลือกวันเริ่มต้นไม่เกินวันสิ้นสุด'});
+    dateReportData=null;$('reportExport').disabled=true;$('dateReportResult').innerHTML='<p class="helper">กำลังโหลดรายการเบิก</p>';
+    await run('กำลังค้นหารายการเบิก',async()=>{
+      const result=await api('dateReport',{token,startDate,endDate});
+      if(!$('reportStart')||$('reportStart').value!==startDate||$('reportEnd').value!==endDate)return;
+      dateReportData=result;$('reportExport').disabled=!result.records.length;
+      const rows=result.records.map(t=>`<tr><td>${esc(t.date||'—')}</td><td>${esc(t.empId||'—')}</td><td>${esc(t.employee||'—')}</td><td>${esc(t.department||'—')}</td><td>${esc(t.product||'—')}</td><td>${esc(t.quantity==null?'—':t.quantity)}${t.unit?' '+esc(t.unit):''}</td><td>${esc(t.performedBy||'—')}</td></tr>`).join('');
+      $('dateReportResult').innerHTML=`<div class="report-date-summary"><strong>ผลการค้นหา</strong><span>${result.records.length} รายการ</span></div><div class="scroll"><table class="report-date-table"><thead><tr><th>วันเวลาที่เบิก</th><th>รหัสพนักงาน</th><th>ชื่อ–นามสกุล</th><th>แผนก</th><th>สินค้า / Size</th><th>จำนวน</th><th>ผู้ทำรายการ</th></tr></thead><tbody>${rows||'<tr><td colspan="7" class="dash-empty">ไม่พบรายการเบิกในช่วงวันที่เลือก</td></tr>'}</tbody></table></div>`;
+    });
+  }
+  async function exportDateReport(){
+    const data=dateReportData;if(!data||!data.records.length)return;
+    if(typeof XLSX==='undefined')return alert({icon:'error',title:'ไม่สามารถ Export ได้',text:'ตรวจสอบไฟล์ assets/xlsx.full.min.js แล้วรีเฟรชหน้าเว็บ'});
+    if(!await confirm('ยืนยัน Export Excel','ส่งออกรายการเบิก '+data.records.length+' รายการ ตั้งแต่ '+data.startDate+' ถึง '+data.endDate+'?'))return;
+    await run('กำลังสร้างไฟล์ Excel',async()=>{
+      const headers=['วันเวลาที่เบิก','รหัสพนักงาน','ชื่อ–นามสกุล','แผนก','สินค้า / Size','จำนวน','หน่วย','ผู้ทำรายการ','แหล่งข้อมูล'];
+      const rows=data.records.map(t=>[t.date||'—',String(t.empId||''),t.employee||'—',t.department||'—',t.product||'—',t.quantity==null?'—':t.quantity,t.unit||'—',t.performedBy||'—',t.source||'—']);
+      const sheet=XLSX.utils.aoa_to_sheet([headers,...rows]);sheet['!cols']=[{wch:20},{wch:17},{wch:27},{wch:24},{wch:42},{wch:12},{wch:12},{wch:22},{wch:17}];
+      const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,sheet,'Issuance');
+      const stamp=Object.fromEntries(new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Bangkok',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).formatToParts(new Date()).filter(x=>x.type!=='literal').map(x=>[x.type,x.value]));
+      XLSX.writeFile(wb,'IssuanceReport_'+stamp.year+stamp.month+stamp.day+'_'+stamp.hour+stamp.minute+stamp.second+'.xlsx');
+    },'สร้างไฟล์ Excel แล้ว');
   }
   function renderHistoryTimeline(records){
     const icon='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 3 7.5v9L12 21l9-4.5v-9L12 3Z"/><path d="m3 7.5 9 4.5 9-4.5M12 12v9"/></svg>';
@@ -90,64 +144,6 @@ const app = (() => {
       const r=await api('employeeReport',{token,empId});if(!r.found)throw Error('ไม่พบรหัสพนักงาน');
       $('reportResult').innerHTML=`<div class="report-person"><strong>${esc(r.employee.fullName)}</strong><span>รหัส ${esc(r.employee.empId)} · ${esc(r.employee.department)}</span></div>${renderHistoryTimeline(r.records)}`;
     });
-  }
-  function parseLegacyShoeCell(value){
-    const raw=String(value??'').trim();
-    const match=raw.match(/^(\d+(?:\.\d+)?)\s*\/\s*(\d{1,2})-(\d{1,2})-(\d{4}|\d{2})(?![\d+])(?:\s+.*)?$/i);
-    if(!match)return null;
-    const year=match[4].length===2?2000+Number(match[4]):Number(match[4]),month=Number(match[3]),day=Number(match[2]);
-    const date=new Date(Date.UTC(year,month-1,day));
-    if(year<2000||year>2099||date.getUTCFullYear()!==year||date.getUTCMonth()!==month-1||date.getUTCDate()!==day)return null;
-    const iso=year+'-'+String(month).padStart(2,'0')+'-'+String(day).padStart(2,'0');
-    const today=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Bangkok',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
-    if(iso>today)return null;
-    return {size:match[1],date:iso,originalText:raw};
-  }
-  async function importLegacyHistory(){
-    if(typeof XLSX==='undefined')return alert({icon:'error',title:'ไม่สามารถเปิดตัวอ่านไฟล์',text:'ตรวจสอบโฟลเดอร์ assets แล้วรีเฟรชหน้าเว็บ'});
-    const refreshed=await run('กำลังโหลดข้อมูลพนักงานและสินค้า',async()=>{await refresh();return true;});if(!refreshed)return;
-    const itemNames=[...new Map(products.map(p=>[String(p.name||'').trim().replace(/\s+/g,' ').toLowerCase(),String(p.name||'').trim()]).filter(x=>x[0])).values()];
-    if(!itemNames.length)return alert({icon:'warning',title:'ยังไม่มีสินค้า',text:'เพิ่ม Item รองเท้าลงในระบบก่อนนำเข้าประวัติ'});
-    const choices=itemNames.map((name,i)=>`<label class="history-choice"><input type="checkbox" value="${i}"> <span>${esc(name)}</span></label>`).join('');
-    const selection=await alert({title:'นำเข้าประวัติรองเท้าเดิม',width:700,html:`<div class="import-dialog"><p>เลือก Item รองเท้าที่จะให้ประวัตินี้ใช้ตรวจสิทธิ์เบิก สามารถเลือกหลาย Item ที่เป็นรองเท้ากลุ่มเดียวกัน</p><div class="history-choices">${choices}</div><label for="historyFile">ไฟล์ Excel ประวัติรองเท้า</label><input type="file" id="historyFile" accept=".xlsx,.xls"><small>ใช้ชีตแรกในรูปแบบตัวอย่าง: รหัสพนักงานคอลัมน์ A และประวัติเริ่มคอลัมน์ F ประวัติจะไม่ตัดสต็อก และจำนวนที่ไม่ระบุจะแสดงเป็น —</small></div>`,showCancelButton:true,confirmButtonText:'ตรวจสอบไฟล์',cancelButtonText:'ยกเลิก',preConfirm:async()=>{
-      const selected=[...document.querySelectorAll('.history-choice input:checked')].map(el=>itemNames[Number(el.value)]),file=$('historyFile').files[0];
-      if(!selected.length||!file){Swal.showValidationMessage('กรุณาเลือก Item รองเท้าพร้อมไฟล์ Excel');return false;}
-      if(!/\.(xlsx|xls)$/i.test(file.name)||file.size>10*1024*1024){Swal.showValidationMessage('กรุณาเลือกไฟล์ Excel ขนาดไม่เกิน 10 MB');return false;}
-      try{
-        const wb=XLSX.read(await file.arrayBuffer(),{type:'array',cellDates:false}),sheetName=wb.SheetNames[0],sheet=wb.Sheets[sheetName];
-        if(!sheet||!sheet['!ref']||!/^code\s*no\.?$/i.test(String(sheet.A3?.v||'').trim())||!String(sheet.F3?.v||'').includes('ครั้ง'))throw Error('รูปแบบไฟล์ไม่ตรงตัวอย่าง: ต้องมี Code No. ที่ A3 และ ครั้งที่ 1 ที่ F3');
-        const range=XLSX.utils.decode_range(sheet['!ref']);if(range.e.r>10000||range.e.c>200)throw Error('ไฟล์มีขนาดตารางเกินขอบเขตที่รองรับ');
-        const read=cell=>cell?(cell.w!=null?String(cell.w):String(cell.v??'')):'';
-        const normalized=v=>{const s=String(v??'').trim();return /^\d+$/.test(s)?s.replace(/^0+(?=\d)/,''):s;};
-        const employeeMap=new Map();employees.forEach(e=>{const k=normalized(e.empId);employeeMap.set(k,(employeeMap.get(k)||0)+1);});
-        const rows=[],skipped=[];let excludedMissing=0;
-        for(let row=3;row<=range.e.r;row++){
-          const empId=read(sheet[XLSX.utils.encode_cell({r:row,c:0})]).trim();if(!empId)continue;
-          for(let col=5;col<=range.e.c;col++){
-            const address=XLSX.utils.encode_cell({r:row,c:col}),raw=read(sheet[address]).trim();if(!raw)continue;
-            const sourceCell=sheetName+'!'+address,parsed=parseLegacyShoeCell(raw),count=employeeMap.get(normalized(empId))||0;
-            if(count===0)excludedMissing++;
-            else if(count>1)skipped.push({sourceCell,reason:'รหัสพนักงานซ้ำ',raw});
-            else if(!parsed)skipped.push({sourceCell,reason:'รูปแบบวันที่หรือ Size ไม่ชัดเจน',raw});
-            else rows.push({empId,sourceCell,...parsed});
-          }
-        }
-        if(!rows.length&&!skipped.length&&!excludedMissing)throw Error('ไม่พบรายการประวัติในไฟล์');
-        return {rows,skipped,excludedMissing,itemNames:selected};
-      }catch(e){Swal.showValidationMessage('อ่านไฟล์ไม่สำเร็จ: '+e.message);return false;}
-    }});
-    if(!selection.isConfirmed)return;
-    const {rows,skipped,excludedMissing,itemNames:chosen}=selection.value;
-    const preview=rows.slice(0,5).map(r=>`<tr><td>${esc(r.empId)}</td><td>${esc(r.size)}</td><td>${esc(r.date)}</td><td>${esc(r.sourceCell)}</td></tr>`).join('');
-    const issues=skipped.slice(0,30).map(r=>`<li>${esc(r.sourceCell)}: ${esc(r.raw)} — ${esc(r.reason)}</li>`).join('');
-    const review=await alert({title:'ตรวจสอบประวัติก่อนนำเข้า',icon:rows.length?'question':'warning',width:800,html:`<div class="import-dialog"><p>พร้อมนำเข้า ${rows.length} รายการ · ต้องตรวจสอบ ${skipped.length} รายการ · ตัดออกเพราะไม่พบพนักงาน ${excludedMissing} รายการ</p><p><strong>เชื่อมสิทธิ์กับ Item:</strong> ${esc(chosen.join(', '))}</p><p>ประวัติจะไม่ตัดสต็อก รายการเดิมที่เคยนำเข้าจากตำแหน่งและข้อความเดียวกันจะถูกข้าม</p>${preview?`<div class="scroll"><table><tr><th>พนักงาน</th><th>Size</th><th>วันที่</th><th>เซลล์ต้นทาง</th></tr>${preview}</table></div><small>แสดงตัวอย่าง 5 รายการ ปีสองหลักอ่านเป็น ค.ศ. 20xx</small>`:''}${issues?`<p>รายการที่ต้องตรวจสอบ:</p><ul>${issues}</ul>${skipped.length>30?'<small>แสดงสูงสุด 30 รายการแรก</small>':''}<button type="button" class="secondary import-template" id="downloadHistoryIssues">ดาวน์โหลดรายการที่ต้องตรวจสอบทั้งหมด</button>`:''}</div>`,showCancelButton:!!rows.length,showConfirmButton:!!rows.length,confirmButtonText:'ยืนยันนำเข้าประวัติ',cancelButtonText:'ยกเลิก',didOpen:()=>{const btn=$('downloadHistoryIssues');if(btn)btn.addEventListener('click',()=>{const safe=v=>{let s=String(v??'');if(/^[=+\-@\t\r]/.test(s))s="'"+s;return '"'+s.replace(/"/g,'""')+'"';};const csv='\uFEFF'+[['เซลล์ต้นทาง','ข้อมูลเดิม','สาเหตุ'],...skipped.map(r=>[r.sourceCell,r.raw,r.reason])].map(row=>row.map(safe).join(',')).join('\r\n');const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'})),link=document.createElement('a');link.href=url;link.download='history_review.csv';document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);});}});
-    if(!review.isConfirmed||!rows.length)return;
-    let imported=0,processed=0,serverSkipped=[];
-    try{
-      for(let i=0;i<rows.length;i+=250){loading('กำลังนำเข้าประวัติ '+Math.min(i+250,rows.length)+' / '+rows.length);const result=await write('importLegacyHistory',{rows:rows.slice(i,i+250),itemNames:chosen});imported+=result.imported;serverSkipped=serverSkipped.concat(result.skipped||[]);processed+=Math.min(250,rows.length-i);}
-      const missingAtSave=serverSkipped.filter(r=>r.reason==='ไม่พบพนักงานในระบบ').length;
-      Swal.close();await alert({icon:(skipped.length||serverSkipped.length)?'warning':'success',title:'นำเข้าประวัติเสร็จสิ้น',text:'นำเข้าสำเร็จ '+imported+' รายการ · ตัดออกเพราะไม่พบพนักงาน '+(excludedMissing+missingAtSave)+' รายการ · ต้องตรวจสอบหรือข้าม '+(skipped.length+serverSkipped.length-missingAtSave)+' รายการ สามารถค้นหาประวัติได้จากเมนู Report'});
-    }catch(e){Swal.close();await alert({icon:'error',title:'นำเข้าไม่เสร็จทั้งหมด',text:'ยืนยันผลแล้ว '+processed+' จาก '+rows.length+' รายการ (นำเข้าสำเร็จ '+imported+') รายการในชุดที่ขัดข้องอาจบันทึกแล้ว สามารถเลือกไฟล์เดิมนำเข้าซ้ำได้ ระบบจะข้ามรายการเดิม: '+e.message});}
   }
   function settings(){
     const employeeTab=tab==='employees',userTab=tab==='users';
@@ -284,8 +280,8 @@ const app = (() => {
       if(i<0&&isEmp&&employees.some(x=>x.empId===id)){Swal.showValidationMessage('รหัสนี้มีอยู่แล้ว กรุณาใช้ปุ่มแก้ไข');return false;}return {id:isEmp?id:data.productName,data};
     }});
     if(!result.isConfirmed||!await confirm('ยืนยันบันทึกข้อมูล',result.value.id))return;
-    await run('กำลังบันทึกข้อมูล',async()=>{await write(isEmp?'saveEmployee':'saveProduct',{data:result.value.data});await refresh();settings();},'บันทึกข้อมูลสำเร็จ');
+    await run('กำลังบันทึกข้อมูล',async()=>{await write(isEmp?'saveEmployee':'saveProduct',{data:result.value.data});if(isEmp)await refreshEmployees();else await refreshProducts();settings();},'บันทึกข้อมูลสำเร็จ');
   }
-  async function remove(i){const isEmp=tab==='employees',v=(isEmp?employees:products)[i],id=isEmp?v.empId:v.productId;if(!await confirm('ยืนยันลบรายการ',id+' — ประวัติรายการเดิมยังคงอยู่'))return;await run('กำลังลบข้อมูล',async()=>{await write(isEmp?'deleteEmployee':'deleteProduct',isEmp?{empId:id}:{productId:id});await refresh();settings();},'ลบรายการสำเร็จ');}
-  return {login,logout,page,issue,receive,setTab,edit,remove,editUser,removeUser,togglePassword,importEmployees,importProducts,productDetails,importLegacyHistory};
+  async function remove(i){const isEmp=tab==='employees',v=(isEmp?employees:products)[i],id=isEmp?v.empId:v.productId;if(!await confirm('ยืนยันลบรายการ',id+' — ประวัติรายการเดิมยังคงอยู่'))return;await run('กำลังลบข้อมูล',async()=>{await write(isEmp?'deleteEmployee':'deleteProduct',isEmp?{empId:id}:{productId:id});if(isEmp)await refreshEmployees();else await refreshProducts();settings();},'ลบรายการสำเร็จ');}
+  return {login,logout,page,issue,receive,setTab,edit,remove,editUser,removeUser,togglePassword,importEmployees,importProducts,productDetails,setReportTab,exportDateReport};
 })();
